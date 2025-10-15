@@ -10,5 +10,8 @@ namespace ZatcaIntegration.Services
         /// </summary>
         /// <returns>A string message indicating success.</returns>
         string GenerateInvoice();
+
+        Task<string> GenerateCsrAsync();
+        Task<string> ComplianceCheckAsync(string otp);
     }
 }
