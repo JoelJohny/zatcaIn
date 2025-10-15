@@ -14,6 +14,8 @@ builder.Services.AddControllers();
 // Scoped means a new instance is created for each web request.
 builder.Services.AddScoped<IZatcaService, ZatcaService>();
 
+// Register the new credentials service as a singleton to store credentials for the app's lifetime
+builder.Services.AddSingleton<IZatcaCredentialsService, ZatcaCredentialsService>();
 
 // Add Swagger/OpenAPI services for API documentation and testing UI.
 // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle

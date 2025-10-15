@@ -7,6 +7,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
+using ZatcaIntegration.Models;
 
 namespace ZatcaIntegration.Services
 {
@@ -16,6 +17,11 @@ namespace ZatcaIntegration.Services
     public class ZatcaService : IZatcaService
     {
         private static readonly HttpClient _httpClient = new HttpClient();
+        private readonly IZatcaCredentialsService _credentialsService;
+        public ZatcaService(IZatcaCredentialsService credentialsService)
+        {
+            _credentialsService = credentialsService;
+        }
         public string GenerateInvoice()
         {
             // In a real application, you would put your complex logic here
@@ -114,7 +120,7 @@ namespace ZatcaIntegration.Services
             }
         }
 
-        public async Task<string> ComplianceCheckAsync(string otp)
+       public async Task<string> ComplianceCheckAsync(string otp)
         {
             var certificatesPath = Path.Combine(Directory.GetCurrentDirectory(), "Output", "Certificates");
             var csrFilePath = Path.Combine(certificatesPath, "certificate.csr");
@@ -126,38 +132,38 @@ namespace ZatcaIntegration.Services
 
             try
             {
-                // 1. Read the CSR file content
                 var csrContent = await File.ReadAllTextAsync(csrFilePath);
-
-                // 2. Encode the CSR content to Base64
                 var csrBytes = Encoding.UTF8.GetBytes(csrContent);
                 var csrBase64 = Convert.ToBase64String(csrBytes);
 
-                // 3. Prepare the HTTP request
                 var requestUrl = "https://gw-fatoora.zatca.gov.sa/e-invoicing/developer-portal/compliance";
                 var requestBody = new { csr = csrBase64 };
                 var jsonBody = JsonSerializer.Serialize(requestBody);
                 var content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
 
-                using (var request = new HttpRequestMessage(HttpMethod.Post, requestUrl))
+                using var request = new HttpRequestMessage(HttpMethod.Post, requestUrl);
+                request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+                request.Headers.Add("OTP", otp);
+                request.Headers.Add("Accept-Version", "V2");
+                request.Content = content;
+                
+                var response = await _httpClient.SendAsync(request);
+                var responseBody = await response.Content.ReadAsStringAsync();
+
+                if (response.IsSuccessStatusCode)
                 {
-                    request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-                    request.Headers.Add("OTP", otp);
-                    request.Headers.Add("Accept-Version", "V2");
-                    request.Content = content;
-
-                    // 4. Send the request and get the response
-                    var response = await _httpClient.SendAsync(request);
-                    var responseBody = await response.Content.ReadAsStringAsync();
-
-                    if (response.IsSuccessStatusCode)
+                    var complianceResponse = JsonSerializer.Deserialize<ComplianceResponse>(responseBody);
+                    if (complianceResponse != null && !string.IsNullOrEmpty(complianceResponse.BinarySecurityToken))
                     {
-                        return $"Compliance check successful.\n--- Response ---\n{responseBody}";
+                        // Store the credentials using the dedicated service
+                        _credentialsService.SetCredentials(complianceResponse.BinarySecurityToken, complianceResponse.Secret);
+                        return $"Compliance check successful. Credentials have been stored.\n--- Response ---\n{responseBody}";
                     }
-                    else
-                    {
-                        return $"Error during compliance check. Status Code: {response.StatusCode}\n--- Response ---\n{responseBody}";
-                    }
+                    return $"Error: Compliance check was successful, but the response did not contain the expected data.\n--- Response ---\n{responseBody}";
+                }
+                else
+                {
+                    return $"Error during compliance check. Status Code: {response.StatusCode}\n--- Response ---\n{responseBody}";
                 }
             }
             catch (Exception ex)
