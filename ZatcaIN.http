@@ -1,0 +1,6 @@
+@ZatcaIN_HostAddress = http://localhost:5123
+
+GET {{ZatcaIN_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
