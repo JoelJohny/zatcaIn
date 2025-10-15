@@ -98,6 +98,59 @@ namespace ZatcaIntegration.Controllers
 
             return Ok(result);
         }
+
+        [HttpPost("create-certificate-pem")]
+        public async Task<IActionResult> CreateCertificatePem()
+        {
+            var result = await _zatcaService.CreateCertificatePemAsync();
+            if (result.StartsWith("Error"))
+            {
+                // Return a 404 Not Found if required files are missing, otherwise a 500 error.
+                return result.Contains("not found") ? NotFound(result) : StatusCode(500, result);
+            }
+            return Ok(result);
+        }
+        [HttpPost("{invoiceId}/create-xml")]
+        [ProducesResponseType(typeof(string), 200)]
+        [ProducesResponseType(typeof(string), 400)]
+        public async Task<IActionResult> CreateInvoiceXml(string invoiceId)
+        {
+            if (string.IsNullOrWhiteSpace(invoiceId))
+            {
+                return BadRequest("Invoice ID cannot be empty.");
+            }
+            var result = await _zatcaService.CreateInvoiceXmlAsync(invoiceId);
+            if (result.StartsWith("Error"))
+            {
+                return BadRequest(result);
+            }
+            return Ok(result);
+        }
+
+        [HttpPost("generate-invoice-hash/{invoiceId}")]
+        public async Task<IActionResult> GenerateInvoiceHash(string invoiceId)
+        {
+            if (string.IsNullOrEmpty(invoiceId))
+            {
+                return BadRequest(new { message = "Invoice ID is required." });
+            }
+            var result = await _zatcaService.GenerateInvoiceHashAsync(invoiceId);
+            if (result.StartsWith("Error"))
+            {
+                return BadRequest(new { message = result });
+            }
+            return Ok(new { message = result });
+        }
+        [HttpPost("generate-compliance-request/{invoiceId}")]
+        public async Task<IActionResult> GenerateComplianceRequest(string invoiceId)
+        {
+            var result = await _zatcaService.GenerateComplianceInvoiceRequestAsync(invoiceId);
+            if (result.StartsWith("Error"))
+            {
+                return BadRequest(new { message = result });
+            }
+            return Ok(new { message = result });
+        }
     }
 }
 
