@@ -1,3 +1,6 @@
+using System.Threading.Tasks;
+using ZatcaIntegration.Models;
+
 namespace ZatcaIntegration.Services
 {
     /// <summary>
@@ -13,5 +16,6 @@ namespace ZatcaIntegration.Services
 
         Task<string> GenerateCsrAsync();
         Task<string> ComplianceCheckAsync(string otp);
+        Task<string> CreateStandardInvoiceJsonAsync(Invoice invoiceData);
     }
 }

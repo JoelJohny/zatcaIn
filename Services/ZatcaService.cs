@@ -120,7 +120,7 @@ namespace ZatcaIntegration.Services
             }
         }
 
-       public async Task<string> ComplianceCheckAsync(string otp)
+        public async Task<string> ComplianceCheckAsync(string otp)
         {
             var certificatesPath = Path.Combine(Directory.GetCurrentDirectory(), "Output", "Certificates");
             var csrFilePath = Path.Combine(certificatesPath, "certificate.csr");
@@ -146,7 +146,7 @@ namespace ZatcaIntegration.Services
                 request.Headers.Add("OTP", otp);
                 request.Headers.Add("Accept-Version", "V2");
                 request.Content = content;
-                
+
                 var response = await _httpClient.SendAsync(request);
                 var responseBody = await response.Content.ReadAsStringAsync();
 
@@ -169,6 +169,33 @@ namespace ZatcaIntegration.Services
             catch (Exception ex)
             {
                 return $"An exception occurred during the compliance check: {ex.Message}";
+            }
+        }
+        
+        public async Task<string> CreateStandardInvoiceJsonAsync(Invoice invoiceData)
+        {
+            try
+            {
+                // Configure serializer for pretty-printing the JSON
+                var options = new JsonSerializerOptions
+                {
+                    WriteIndented = true
+                };
+
+                var jsonString = JsonSerializer.Serialize(invoiceData, options);
+
+                // Save the JSON to a file
+                var invoicesPath = Path.Combine(Directory.GetCurrentDirectory(), "Output", "Invoices");
+                Directory.CreateDirectory(invoicesPath);
+                var filePath = Path.Combine(invoicesPath, $"{invoiceData.Id}.json");
+
+                await File.WriteAllTextAsync(filePath, jsonString);
+
+                return $"Successfully created JSON invoice at: {filePath}";
+            }
+            catch (Exception ex)
+            {
+                return $"An error occurred during JSON creation: {ex.Message}";
             }
         }
     }

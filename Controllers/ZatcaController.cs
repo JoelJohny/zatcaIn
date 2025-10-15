@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
 using System.ComponentModel.DataAnnotations;
 using System.Threading.Tasks;
+using ZatcaIntegration.Models;
 using ZatcaIntegration.Services;
 
 namespace ZatcaIntegration.Controllers
@@ -75,6 +76,24 @@ namespace ZatcaIntegration.Controllers
                     return NotFound(result);
                 }
                 return BadRequest(result);
+            }
+
+            return Ok(result);
+        }
+
+        [HttpPost("create-standard-invoice")]
+        public async Task<IActionResult> CreateStandardInvoice([FromBody] Invoice invoiceData)
+        {
+            if (!ModelState.IsValid)
+            {
+                return BadRequest(ModelState);
+            }
+
+            var result = await _zatcaService.CreateStandardInvoiceJsonAsync(invoiceData);
+
+            if (result.StartsWith("An error"))
+            {
+                return StatusCode(500, result); // Internal Server Error
             }
 
             return Ok(result);
