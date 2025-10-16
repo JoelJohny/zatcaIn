@@ -503,20 +503,23 @@ namespace ZatcaIntegration.Services
                 {
                     return $"Error generating compliance request JSON. Exit Code: {process.ExitCode}\n--- Error ---\n{error}\n--- Output ---\n{output}";
                 }
+                
+                // Find the generated JSON file in the script's directory
+                var generatedFile = new DirectoryInfo(fatooraScriptsPath)
+                    .GetFiles("generated-json-request-*.json")
+                    .OrderByDescending(f => f.CreationTime)
+                    .FirstOrDefault();
 
-                // Assuming the command prints the JSON to standard output. We may need to trim logs.
-                var outputString = output.ToString();
-
-                // The tool might print logs before the JSON. Let's find the start of the JSON.
-                int jsonStartIndex = outputString.IndexOf('{');
-                if (jsonStartIndex == -1)
+                if (generatedFile == null)
                 {
-                    return $"Error: Could not find JSON content in the command output.\n--- Output ---\n{outputString}";
+                    return $"Error: The command ran successfully, but the expected output JSON file was not found in '{fatooraScriptsPath}'.\n--- Output ---\n{output}";
                 }
-                var jsonContent = outputString.Substring(jsonStartIndex);
-
-
+                
+                var jsonContent = await File.ReadAllTextAsync(generatedFile.FullName);
                 await File.WriteAllTextAsync(outputJsonPath, jsonContent);
+                
+                // Clean up the generated file from the script directory
+                generatedFile.Delete();
 
                 return $"Successfully created compliance request JSON at: {outputJsonPath}";
             }
