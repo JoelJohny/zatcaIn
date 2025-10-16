@@ -1,23 +1,25 @@
+using ZatcaIntegration.Models;
+
 namespace ZatcaIntegration.Services
 {
-    /// <summary>
-    /// An in-memory implementation of the credentials service.
-    /// NOTE: For production, consider a more persistent and secure storage mechanism.
-    /// </summary>
     public class ZatcaCredentialsService : IZatcaCredentialsService
     {
-        private string _token;
-        private string _secret;
+        private ZatcaCredentials _credentials;
 
-        public (string Token, string Secret) GetCredentials()
+        public void SetCredentials(string token, string secret, long requestId)
         {
-            return (_token, _secret);
+            _credentials = new ZatcaCredentials
+            {
+                BinarySecurityToken = token,
+                Secret = secret,
+                RequestId = requestId
+            };
         }
 
-        public void SetCredentials(string token, string secret)
+        public ZatcaCredentials GetCredentials()
         {
-            _token = token;
-            _secret = secret;
+            return _credentials;
         }
     }
 }
+

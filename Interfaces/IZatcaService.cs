@@ -16,8 +16,9 @@ namespace ZatcaIntegration.Services
         Task<string> CreateInvoiceXmlAsync(string invoiceId);
         Task<string> GenerateInvoiceHashAsync(string invoiceId);
         Task<string> GenerateComplianceInvoiceRequestAsync(string invoiceId);
-        Task<string> RequestProductionCsidAsync(ProductionCsidRequest request);
+        Task<string> RequestProductionCsidAsync();
         Task<string> ClearInvoiceAsync(string invoiceId);
         Task<string> ClearSingleInvoiceAsync(string invoiceId);
+        Task<string> ProcessFullInvoiceWorkflowAsync(Invoice invoiceData);
     }
 }

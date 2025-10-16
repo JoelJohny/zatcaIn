@@ -11,11 +11,13 @@ namespace ZatcaIntegration.Controllers
     public class ZatcaController : ControllerBase
     {
         private readonly IZatcaService _zatcaService;
+        private readonly IInvoiceStateService _invoiceStateService;
 
         // The service is "injected" here through the constructor
-        public ZatcaController(IZatcaService zatcaService)
+        public ZatcaController(IZatcaService zatcaService, IInvoiceStateService invoiceStateService)
         {
             _zatcaService = zatcaService;
+            _invoiceStateService = invoiceStateService;
         }
 
         [HttpPost("generate-invoice")]
@@ -152,9 +154,9 @@ namespace ZatcaIntegration.Controllers
             return Ok(new { message = result });
         }
         [HttpPost("request-production-csid")]
-        public async Task<IActionResult> RequestProductionCsid([FromBody] ProductionCsidRequest request)
+        public async Task<IActionResult> RequestProductionCsid()
         {
-            var result = await _zatcaService.RequestProductionCsidAsync(request);
+            var result = await _zatcaService.RequestProductionCsidAsync();
             if (result.StartsWith("Error"))
             {
                 return BadRequest(new { message = result });
@@ -179,6 +181,26 @@ namespace ZatcaIntegration.Controllers
             {
                 return BadRequest(new { message = result });
             }
+            return Ok(new { message = result });
+        }
+        [HttpGet("invoice-status/{invoiceId}")]
+        public IActionResult GetInvoiceStatus(string invoiceId)
+        {
+            var state = _invoiceStateService.GetInvoiceState(invoiceId);
+            if (state == null)
+            {
+                return NotFound(new { message = $"No stored data found for invoice ID '{invoiceId}'." });
+            }
+            return Ok(state);
+        }
+        [HttpPost("process-full-invoice")]
+        public async Task<IActionResult> ProcessFullInvoiceWorkflow([FromBody] Invoice invoiceData)
+        {
+            if (invoiceData == null || string.IsNullOrEmpty(invoiceData.Id))
+            {
+                return BadRequest(new { message = "Valid invoice data with an ID is required." });
+            }
+            var result = await _zatcaService.ProcessFullInvoiceWorkflowAsync(invoiceData);
             return Ok(new { message = result });
         }
     }

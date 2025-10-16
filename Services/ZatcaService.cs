@@ -20,9 +20,11 @@ namespace ZatcaIntegration.Services
     {
         private static readonly HttpClient _httpClient = new HttpClient();
         private readonly IZatcaCredentialsService _credentialsService;
-        public ZatcaService(IZatcaCredentialsService credentialsService)
+        private readonly IInvoiceStateService _invoiceStateService;
+        public ZatcaService(IZatcaCredentialsService credentialsService, IInvoiceStateService invoiceStateService)
         {
             _credentialsService = credentialsService;
+            _invoiceStateService = invoiceStateService;
         }
         public string GenerateInvoice()
         {
@@ -158,7 +160,7 @@ namespace ZatcaIntegration.Services
                     if (complianceResponse != null && !string.IsNullOrEmpty(complianceResponse.BinarySecurityToken))
                     {
                         // Store the credentials using the dedicated service
-                        _credentialsService.SetCredentials(complianceResponse.BinarySecurityToken, complianceResponse.Secret);
+                        _credentialsService.SetCredentials(complianceResponse.BinarySecurityToken, complianceResponse.Secret, complianceResponse.RequestID);
                         return $"Compliance check successful. Credentials have been stored.\n--- Response ---\n{responseBody}";
                     }
                     return $"Error: Compliance check was successful, but the response did not contain the expected data.\n--- Response ---\n{responseBody}";
@@ -193,6 +195,13 @@ namespace ZatcaIntegration.Services
 
                 await File.WriteAllTextAsync(filePath, jsonString);
 
+                var initialState = new InvoiceState
+                {
+                    InvoiceId = invoiceData.Id,
+                    Uuid = invoiceData.Uuid
+                };
+                _invoiceStateService.StoreInvoiceState(initialState);
+
                 return $"Successfully created JSON invoice at: {filePath}";
             }
             catch (Exception ex)
@@ -205,13 +214,13 @@ namespace ZatcaIntegration.Services
             try
             {
                 var credentials = _credentialsService.GetCredentials();
-                if (string.IsNullOrEmpty(credentials.Token))
+                if (string.IsNullOrEmpty(credentials.BinarySecurityToken))
                 {
                     return "Error: Credentials (binarySecurityToken) not found. Please run the compliance check first.";
                 }
 
                 // Decode the token from Base64 and re-encode it with line breaks for proper PEM formatting.
-                var tokenBytes = Convert.FromBase64String(credentials.Token);
+                var tokenBytes = Convert.FromBase64String(credentials.BinarySecurityToken);
                 string decodedString = Encoding.UTF8.GetString(tokenBytes);
                 // var formattedToken = Convert.ToBase64String(tokenBytes, Base64FormattingOptions.InsertLineBreaks);
 
@@ -417,25 +426,9 @@ namespace ZatcaIntegration.Services
                     return $"Could not find invoice hash in the command output.\n--- Output ---\n{output}";
                 }
 
-                // --- Update XML with the new hash ---
-                var xmlDoc = new XmlDocument();
-                xmlDoc.PreserveWhitespace = true; // Important for keeping the XML format intact
-                xmlDoc.Load(invoiceXmlPath);
 
-                // The 'ds' namespace is required to find the DigestValue element
-                var nsmgr = new XmlNamespaceManager(xmlDoc.NameTable);
-                nsmgr.AddNamespace("ds", "http://www.w3.org/2000/09/xmldsig#");
-
-                // Use a more specific XPath to target the correct DigestValue
-                var digestValueNode = xmlDoc.SelectSingleNode("//ds:Reference[@Id='invoiceSignedData']/ds:DigestValue", nsmgr);
-
-                if (digestValueNode == null)
-                {
-                    return "Error: Could not find the <ds:DigestValue> tag within the Reference with Id='invoiceSignedData'.";
-                }
-
-                digestValueNode.InnerText = invoiceHash;
-                xmlDoc.Save(invoiceXmlPath);
+                var stateUpdate = new InvoiceState { InvoiceHash = invoiceHash };
+                _invoiceStateService.UpdateInvoiceState(invoiceId, stateUpdate);
 
                 return $"Successfully generated hash '{invoiceHash}' and updated {invoiceId}_signed.xml.";
 
@@ -528,20 +521,21 @@ namespace ZatcaIntegration.Services
                 return $"An exception occurred: {ex.Message}";
             }
         }
-        public async Task<string> RequestProductionCsidAsync(ProductionCsidRequest requestBody)
+        public async Task<string> RequestProductionCsidAsync()
         {
             try
             {
                 // 1. Get the compliance credentials
                 var credentials = _credentialsService.GetCredentials();
 
-                if (string.IsNullOrEmpty(credentials.Token) || string.IsNullOrEmpty(credentials.Secret))
+                if (string.IsNullOrEmpty(credentials.BinarySecurityToken) || string.IsNullOrEmpty(credentials.Secret))
                 {
                     return "Error: Compliance credentials not found. Please run the compliance check first.";
                 }
 
                 // 2. Prepare the request
                 var requestUrl = "https://gw-fatoora.zatca.gov.sa/e-invoicing/developer-portal/production/csids";
+                var requestBody = new ProductionCsidRequest { ComplianceRequestId = credentials.RequestId.ToString() };
                 var jsonBody = JsonSerializer.Serialize(requestBody);
                 var content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
 
@@ -551,7 +545,7 @@ namespace ZatcaIntegration.Services
                 request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
                 request.Headers.Add("Accept-Version", "V2");
 
-                var authString = $"{credentials.Token}:{credentials.Secret}";
+                var authString = $"{credentials.BinarySecurityToken}:{credentials.Secret}";
                 var authBytes = Encoding.UTF8.GetBytes(authString);
                 var authBase64 = Convert.ToBase64String(authBytes);
                 request.Headers.Authorization = new AuthenticationHeaderValue("Basic", authBase64);
@@ -568,7 +562,7 @@ namespace ZatcaIntegration.Services
                     if (newCredentials != null && !string.IsNullOrEmpty(newCredentials.BinarySecurityToken))
                     {
                         // Overwrite the old credentials with the new production ones
-                        _credentialsService.SetCredentials(newCredentials.BinarySecurityToken, newCredentials.Secret);
+                        _credentialsService.SetCredentials(newCredentials.BinarySecurityToken, newCredentials.Secret, newCredentials.RequestID);
                         return $"Successfully obtained new production CSID. Credentials have been updated.\n--- Response ---\n{responseBody}";
                     }
                     return $"Error: Production CSID request was successful, but the response did not contain the expected data.\n--- Response ---\n{responseBody}";
@@ -589,7 +583,7 @@ namespace ZatcaIntegration.Services
             {
                 // 1. Get the production credentials
                 var credentials = _credentialsService.GetCredentials();
-                if (string.IsNullOrEmpty(credentials.Token) || string.IsNullOrEmpty(credentials.Secret))
+                if (string.IsNullOrEmpty(credentials.BinarySecurityToken) || string.IsNullOrEmpty(credentials.Secret))
                 {
                     return "Error: Production credentials not found. Please request a production CSID first.";
                 }
@@ -612,7 +606,7 @@ namespace ZatcaIntegration.Services
                 request.Headers.Add("Accept-Language", "en");
                 request.Headers.Add("Accept-Version", "V2");
 
-                var authString = $"{credentials.Token}:{credentials.Secret}";
+                var authString = $"{credentials.BinarySecurityToken}:{credentials.Secret}";
                 var authBytes = Encoding.UTF8.GetBytes(authString);
                 var authBase64 = Convert.ToBase64String(authBytes);
                 request.Headers.Authorization = new AuthenticationHeaderValue("Basic", authBase64);
@@ -626,6 +620,17 @@ namespace ZatcaIntegration.Services
                 if (response.IsSuccessStatusCode)
                 {
                     var clearanceResponse = JsonSerializer.Deserialize<ClearanceResponse>(responseBody);
+                    if (clearanceResponse != null)
+                    {
+                        var stateUpdate = new InvoiceState
+                        {
+                            ClearanceStatus = clearanceResponse.ClearanceStatus,
+                            ClearedInvoice = clearanceResponse.ClearedInvoice,
+                            QrCode = clearanceResponse.QrCode
+                        };
+                        _invoiceStateService.UpdateInvoiceState(invoiceId, stateUpdate);
+                    }
+                    
                     return $"Invoice cleared successfully. Status: {clearanceResponse?.ClearanceStatus}\n--- Response ---\n{responseBody}";
                 }
                 else
@@ -644,7 +649,7 @@ namespace ZatcaIntegration.Services
             {
                 // 1. Get the production credentials
                 var credentials = _credentialsService.GetCredentials();
-                if ( string.IsNullOrEmpty(credentials.Token) || string.IsNullOrEmpty(credentials.Secret))
+                if (string.IsNullOrEmpty(credentials.BinarySecurityToken) || string.IsNullOrEmpty(credentials.Secret))
                 {
                     return "Error: Production credentials not found. Please request a production CSID first.";
                 }
@@ -668,7 +673,7 @@ namespace ZatcaIntegration.Services
                 request.Headers.Add("Accept-Version", "V2");
                 request.Headers.Add("Clearance-Status", "1");
 
-                var authString = $"{credentials.Token}:{credentials.Secret}";
+                var authString = $"{credentials.BinarySecurityToken}:{credentials.Secret}";
                 var authBytes = Encoding.UTF8.GetBytes(authString);
                 var authBase64 = Convert.ToBase64String(authBytes);
                 request.Headers.Authorization = new AuthenticationHeaderValue("Basic", authBase64);
@@ -683,6 +688,18 @@ namespace ZatcaIntegration.Services
                 {
                     // The response model should be the same as the other clearance API
                     var clearanceResponse = JsonSerializer.Deserialize<ClearanceResponse>(responseBody);
+
+                    if (clearanceResponse != null)
+                    {
+                        var stateUpdate = new InvoiceState
+                        {
+                            ClearanceStatus = clearanceResponse.ClearanceStatus,
+                            ClearedInvoice = clearanceResponse.ClearedInvoice,
+                            QrCode = clearanceResponse.QrCode
+                        };
+                        _invoiceStateService.UpdateInvoiceState(invoiceId, stateUpdate);
+                    }
+
                     return $"Single invoice clearance successful. Status: {clearanceResponse?.ClearanceStatus}\n--- Response ---\n{responseBody}";
                 }
                 else
@@ -693,6 +710,57 @@ namespace ZatcaIntegration.Services
             catch (Exception ex)
             {
                 return $"An exception occurred during single invoice clearance: {ex.Message}";
+            }
+        }
+        public async Task<string> ProcessFullInvoiceWorkflowAsync(Invoice invoiceData)
+        {
+            var results = new StringBuilder();
+            
+            // Helper function to check for errors
+            bool IsError(string result) => result.StartsWith("Error", StringComparison.OrdinalIgnoreCase);
+
+            try
+            {
+                // Step 1: Create Standard Invoice JSON
+                var jsonResult = await CreateStandardInvoiceJsonAsync(invoiceData);
+                results.AppendLine($"Step 1 (Create JSON): {jsonResult}");
+                if (IsError(jsonResult)) return results.ToString();
+
+                // Step 2: Create Signed Invoice XML
+                var xmlResult = await CreateInvoiceXmlAsync(invoiceData.Id);
+                results.AppendLine($"Step 2 (Create XML): {xmlResult}");
+                if (IsError(xmlResult)) return results.ToString();
+                
+                // Step 3: Generate Invoice Hash and Update XML
+                var hashResult = await GenerateInvoiceHashAsync(invoiceData.Id);
+                results.AppendLine($"Step 3 (Generate Hash): {hashResult}");
+                if (IsError(hashResult)) return results.ToString();
+                
+                // Step 4: Generate Compliance Request JSON
+                var complianceRequestResult = await GenerateComplianceInvoiceRequestAsync(invoiceData.Id);
+                results.AppendLine($"Step 4 (Generate Compliance Request): {complianceRequestResult}");
+                if (IsError(complianceRequestResult)) return results.ToString();
+
+                // Step 5: Clear Invoice (Compliance)
+                var complianceClearanceResult = await ClearInvoiceAsync(invoiceData.Id);
+                results.AppendLine($"Step 5 (Compliance Clearance): {complianceClearanceResult}");
+                if (IsError(complianceClearanceResult)) return results.ToString();
+
+                // Step 6: Request Production CSID
+                var productionCsidResult = await RequestProductionCsidAsync();
+                results.AppendLine($"Step 6 (Request Production CSID): {productionCsidResult}");
+                if (IsError(productionCsidResult)) return results.ToString();
+                
+                // Step 7: Clear Single Invoice (Production)
+                var singleClearanceResult = await ClearSingleInvoiceAsync(invoiceData.Id);
+                results.AppendLine($"Step 7 (Production Clearance): {singleClearanceResult}");
+                if (IsError(singleClearanceResult)) return results.ToString();
+
+                return $"Workflow completed successfully for invoice '{invoiceData.Id}'.\n\n--- Full Log ---\n{results}";
+            }
+            catch (Exception ex)
+            {
+                return $"A critical error occurred during the workflow: {ex.Message}\n\n--- Log ---\n{results}";
             }
         }
     }
