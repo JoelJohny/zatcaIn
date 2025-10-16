@@ -1,5 +1,6 @@
 using Microsoft.OpenApi.Models;
 // Import your services namespace
+using ZatcaIntegration.Models;
 using ZatcaIntegration.Services;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -12,6 +13,8 @@ builder.Services.AddControllers();
 // ==> ADD YOUR SERVICES HERE <==
 // Registering a service with its interface.
 // Scoped means a new instance is created for each web request.
+builder.Services.Configure<ZatcaApiSettings>(builder.Configuration.GetSection("ZatcaApi"));
+
 builder.Services.AddScoped<IZatcaService, ZatcaService>();
 
 // Register the new credentials service as a singleton to store credentials for the app's lifetime

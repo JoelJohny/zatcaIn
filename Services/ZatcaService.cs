@@ -9,6 +9,7 @@ using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
 using System.Xml;
+using Microsoft.Extensions.Options;
 using ZatcaIntegration.Models;
 
 namespace ZatcaIntegration.Services
@@ -21,10 +22,12 @@ namespace ZatcaIntegration.Services
         private static readonly HttpClient _httpClient = new HttpClient();
         private readonly IZatcaCredentialsService _credentialsService;
         private readonly IInvoiceStateService _invoiceStateService;
-        public ZatcaService(IZatcaCredentialsService credentialsService, IInvoiceStateService invoiceStateService)
+        private readonly ZatcaApiSettings _zatcaApiSettings;
+        public ZatcaService(IZatcaCredentialsService credentialsService, IInvoiceStateService invoiceStateService, IOptions<ZatcaApiSettings> zatcaApiSettings)
         {
             _credentialsService = credentialsService;
             _invoiceStateService = invoiceStateService;
+            _zatcaApiSettings = zatcaApiSettings.Value;
         }
         public string GenerateInvoice()
         {
@@ -140,7 +143,7 @@ namespace ZatcaIntegration.Services
                 var csrBytes = Encoding.UTF8.GetBytes(csrContent);
                 var csrBase64 = Convert.ToBase64String(csrBytes);
 
-                var requestUrl = "https://gw-fatoora.zatca.gov.sa/e-invoicing/developer-portal/compliance";
+                var requestUrl = _zatcaApiSettings.ComplianceUrl;;
                 var requestBody = new { csr = csrBase64 };
                 var jsonBody = JsonSerializer.Serialize(requestBody);
                 var content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
@@ -534,7 +537,7 @@ namespace ZatcaIntegration.Services
                 }
 
                 // 2. Prepare the request
-                var requestUrl = "https://gw-fatoora.zatca.gov.sa/e-invoicing/developer-portal/production/csids";
+                var requestUrl = _zatcaApiSettings.ProductionCsidUrl;;
                 var requestBody = new ProductionCsidRequest { ComplianceRequestId = credentials.RequestId.ToString() };
                 var jsonBody = JsonSerializer.Serialize(requestBody);
                 var content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
@@ -598,7 +601,7 @@ namespace ZatcaIntegration.Services
                 var content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
 
                 // 3. Prepare the request to the clearance API
-                var requestUrl = "https://gw-fatoora.zatca.gov.sa/e-invoicing/developer-portal/compliance/invoices";
+                var requestUrl =_zatcaApiSettings.ComplianceInvoicesUrl;
                 using var request = new HttpRequestMessage(HttpMethod.Post, requestUrl);
 
                 // 4. Set headers
@@ -664,7 +667,7 @@ namespace ZatcaIntegration.Services
                 var content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
 
                 // 3. Prepare the request to the single clearance API
-                var requestUrl = "https://gw-fatoora.zatca.gov.sa/e-invoicing/developer-portal/invoices/clearance/single";
+                var requestUrl = _zatcaApiSettings.SingleClearanceUrl;
                 using var request = new HttpRequestMessage(HttpMethod.Post, requestUrl);
 
                 // 4. Set headers, including the new 'Clearance-Status' header
