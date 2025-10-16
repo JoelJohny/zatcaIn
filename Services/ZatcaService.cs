@@ -270,7 +270,7 @@ namespace ZatcaIntegration.Services
             if (!File.Exists(keyPath)) return $"Error: Private key file not found at '{keyPath}'";
 
 
-            var arguments = $"\"{pythonScriptPath}\" generate --input \"{invoiceJsonPath}\" --output \"{outputXmlPath}\" --key \"{keyPath}\" --cert \"{certPath}\"";
+            var arguments = $"\"{pythonScriptPath}\" generate --input \"{invoiceJsonPath}\" --output \"{outputXmlPath}\" --key \"{keyPath}\" --cert \"{certPath}\" --external-hasher Fatoora";
 
             string shellFileName;
 
@@ -506,7 +506,7 @@ namespace ZatcaIntegration.Services
 
                 // Assuming the command prints the JSON to standard output. We may need to trim logs.
                 var outputString = output.ToString();
-                
+
                 // The tool might print logs before the JSON. Let's find the start of the JSON.
                 int jsonStartIndex = outputString.IndexOf('{');
                 if (jsonStartIndex == -1)
@@ -523,6 +523,173 @@ namespace ZatcaIntegration.Services
             catch (Exception ex)
             {
                 return $"An exception occurred: {ex.Message}";
+            }
+        }
+        public async Task<string> RequestProductionCsidAsync(ProductionCsidRequest requestBody)
+        {
+            try
+            {
+                // 1. Get the compliance credentials
+                var credentials = _credentialsService.GetCredentials();
+
+                if (string.IsNullOrEmpty(credentials.Token) || string.IsNullOrEmpty(credentials.Secret))
+                {
+                    return "Error: Compliance credentials not found. Please run the compliance check first.";
+                }
+
+                // 2. Prepare the request
+                var requestUrl = "https://gw-fatoora.zatca.gov.sa/e-invoicing/developer-portal/production/csids";
+                var jsonBody = JsonSerializer.Serialize(requestBody);
+                var content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
+
+                using var request = new HttpRequestMessage(HttpMethod.Post, requestUrl);
+
+                // 3. Set headers, including Basic Authentication
+                request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+                request.Headers.Add("Accept-Version", "V2");
+
+                var authString = $"{credentials.Token}:{credentials.Secret}";
+                var authBytes = Encoding.UTF8.GetBytes(authString);
+                var authBase64 = Convert.ToBase64String(authBytes);
+                request.Headers.Authorization = new AuthenticationHeaderValue("Basic", authBase64);
+
+                request.Content = content;
+
+                // 4. Send the request and handle the response
+                var response = await _httpClient.SendAsync(request);
+                var responseBody = await response.Content.ReadAsStringAsync();
+
+                if (response.IsSuccessStatusCode)
+                {
+                    var newCredentials = JsonSerializer.Deserialize<ComplianceResponse>(responseBody);
+                    if (newCredentials != null && !string.IsNullOrEmpty(newCredentials.BinarySecurityToken))
+                    {
+                        // Overwrite the old credentials with the new production ones
+                        _credentialsService.SetCredentials(newCredentials.BinarySecurityToken, newCredentials.Secret);
+                        return $"Successfully obtained new production CSID. Credentials have been updated.\n--- Response ---\n{responseBody}";
+                    }
+                    return $"Error: Production CSID request was successful, but the response did not contain the expected data.\n--- Response ---\n{responseBody}";
+                }
+                else
+                {
+                    return $"Error requesting production CSID. Status Code: {response.StatusCode}\n--- Response ---\n{responseBody}";
+                }
+            }
+            catch (Exception ex)
+            {
+                return $"An exception occurred while requesting the production CSID: {ex.Message}";
+            }
+        }
+        public async Task<string> ClearInvoiceAsync(string invoiceId)
+        {
+            try
+            {
+                // 1. Get the production credentials
+                var credentials = _credentialsService.GetCredentials();
+                if (string.IsNullOrEmpty(credentials.Token) || string.IsNullOrEmpty(credentials.Secret))
+                {
+                    return "Error: Production credentials not found. Please request a production CSID first.";
+                }
+
+                // 2. Read the compliance request JSON
+                var complianceRequestPath = Path.Combine(Directory.GetCurrentDirectory(), "Output", "Invoices", $"{invoiceId}_compliance_request.json");
+                if (!File.Exists(complianceRequestPath))
+                {
+                    return $"Error: Compliance request JSON file not found at '{complianceRequestPath}'.";
+                }
+                var jsonBody = await File.ReadAllTextAsync(complianceRequestPath);
+                var content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
+
+                // 3. Prepare the request to the clearance API
+                var requestUrl = "https://gw-fatoora.zatca.gov.sa/e-invoicing/developer-portal/compliance/invoices";
+                using var request = new HttpRequestMessage(HttpMethod.Post, requestUrl);
+
+                // 4. Set headers
+                request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+                request.Headers.Add("Accept-Language", "en");
+                request.Headers.Add("Accept-Version", "V2");
+
+                var authString = $"{credentials.Token}:{credentials.Secret}";
+                var authBytes = Encoding.UTF8.GetBytes(authString);
+                var authBase64 = Convert.ToBase64String(authBytes);
+                request.Headers.Authorization = new AuthenticationHeaderValue("Basic", authBase64);
+
+                request.Content = content;
+
+                // 5. Send the request and handle the response
+                var response = await _httpClient.SendAsync(request);
+                var responseBody = await response.Content.ReadAsStringAsync();
+
+                if (response.IsSuccessStatusCode)
+                {
+                    var clearanceResponse = JsonSerializer.Deserialize<ClearanceResponse>(responseBody);
+                    return $"Invoice cleared successfully. Status: {clearanceResponse?.ClearanceStatus}\n--- Response ---\n{responseBody}";
+                }
+                else
+                {
+                    return $"Error clearing invoice. Status Code: {response.StatusCode}\n--- Response ---\n{responseBody}";
+                }
+            }
+            catch (Exception ex)
+            {
+                return $"An exception occurred during invoice clearance: {ex.Message}";
+            }
+        }
+        public async Task<string> ClearSingleInvoiceAsync(string invoiceId)
+        {
+            try
+            {
+                // 1. Get the production credentials
+                var credentials = _credentialsService.GetCredentials();
+                if ( string.IsNullOrEmpty(credentials.Token) || string.IsNullOrEmpty(credentials.Secret))
+                {
+                    return "Error: Production credentials not found. Please request a production CSID first.";
+                }
+
+                // 2. Read the compliance request JSON
+                var complianceRequestPath = Path.Combine(Directory.GetCurrentDirectory(), "Output", "Invoices", $"{invoiceId}_compliance_request.json");
+                if (!File.Exists(complianceRequestPath))
+                {
+                    return $"Error: Compliance request JSON file not found at '{complianceRequestPath}'.";
+                }
+                var jsonBody = await File.ReadAllTextAsync(complianceRequestPath);
+                var content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
+
+                // 3. Prepare the request to the single clearance API
+                var requestUrl = "https://gw-fatoora.zatca.gov.sa/e-invoicing/developer-portal/invoices/clearance/single";
+                using var request = new HttpRequestMessage(HttpMethod.Post, requestUrl);
+
+                // 4. Set headers, including the new 'Clearance-Status' header
+                request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+                request.Headers.Add("Accept-Language", "en");
+                request.Headers.Add("Accept-Version", "V2");
+                request.Headers.Add("Clearance-Status", "1");
+
+                var authString = $"{credentials.Token}:{credentials.Secret}";
+                var authBytes = Encoding.UTF8.GetBytes(authString);
+                var authBase64 = Convert.ToBase64String(authBytes);
+                request.Headers.Authorization = new AuthenticationHeaderValue("Basic", authBase64);
+
+                request.Content = content;
+
+                // 5. Send the request and handle the response
+                var response = await _httpClient.SendAsync(request);
+                var responseBody = await response.Content.ReadAsStringAsync();
+
+                if (response.IsSuccessStatusCode)
+                {
+                    // The response model should be the same as the other clearance API
+                    var clearanceResponse = JsonSerializer.Deserialize<ClearanceResponse>(responseBody);
+                    return $"Single invoice clearance successful. Status: {clearanceResponse?.ClearanceStatus}\n--- Response ---\n{responseBody}";
+                }
+                else
+                {
+                    return $"Error clearing single invoice. Status Code: {response.StatusCode}\n--- Response ---\n{responseBody}";
+                }
+            }
+            catch (Exception ex)
+            {
+                return $"An exception occurred during single invoice clearance: {ex.Message}";
             }
         }
     }

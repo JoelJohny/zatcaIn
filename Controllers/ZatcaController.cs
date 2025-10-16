@@ -151,6 +151,36 @@ namespace ZatcaIntegration.Controllers
             }
             return Ok(new { message = result });
         }
+        [HttpPost("request-production-csid")]
+        public async Task<IActionResult> RequestProductionCsid([FromBody] ProductionCsidRequest request)
+        {
+            var result = await _zatcaService.RequestProductionCsidAsync(request);
+            if (result.StartsWith("Error"))
+            {
+                return BadRequest(new { message = result });
+            }
+            return Ok(new { message = result });
+        }
+        [HttpPost("clear-invoice/{invoiceId}")]
+        public async Task<IActionResult> ClearInvoice(string invoiceId)
+        {
+            var result = await _zatcaService.ClearInvoiceAsync(invoiceId);
+            if (result.StartsWith("Error"))
+            {
+                return BadRequest(new { message = result });
+            }
+            return Ok(new { message = result });
+        }
+        [HttpPost("clear-single-invoice/{invoiceId}")]
+        public async Task<IActionResult> ClearSingleInvoice(string invoiceId)
+        {
+            var result = await _zatcaService.ClearSingleInvoiceAsync(invoiceId);
+            if (result.StartsWith("Error"))
+            {
+                return BadRequest(new { message = result });
+            }
+            return Ok(new { message = result });
+        }
     }
 }
 

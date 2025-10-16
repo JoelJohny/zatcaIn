@@ -18,19 +18,27 @@ Usage Examples:
   # 2. Generate a signed invoice from JSON data
   python zatca_invoice_tool.py generate --input invoice_details.json --output signed_invoice.xml
 
-  # 3. Validate a signed invoice XML for well-formedness
+  # 3. Generate using an external hasher that's in the system PATH
+  python zatca_invoice_tool.py generate --input invoice_details.json --output signed_invoice.xml --external-hasher fatoora
+
+  # 4. Validate a signed invoice XML for well-formedness
   python zatca_invoice_tool.py validate --invoice signed_invoice.xml
 
-  # 4. Generate the JSON request for the Compliance API
+  # 5. Generate the JSON request for the Compliance API
   python zatca_invoice_tool.py generate-api-request --invoice signed_invoice.xml --output api_request.json
 
-  # 5. Calculate the hash of an unsigned invoice
+  # 6. Calculate the hash of an unsigned invoice
   python zatca_invoice_tool.py generate-hash --input invoice_details.json
 """
 import base64
 import hashlib
 import json
 import argparse
+import subprocess
+import re
+import tempfile
+import os
+import copy
 from lxml import etree as ET
 from datetime import datetime, timezone
 from cryptography.hazmat.primitives import hashes, serialization
@@ -230,28 +238,141 @@ class ZatcaInvoice:
     
     def get_invoice_hash(self):
         invoice_element, ubl_extensions = self._build_invoice_xml_structure()
+        
+        # Per ZATCA spec (BR-KSA-26), remove specific elements before hashing
         invoice_element.remove(ubl_extensions)
+        
         signature_placeholder = invoice_element.find('.//cac:Signature', self.namespaces)
         if signature_placeholder is not None:
             signature_placeholder.getparent().remove(signature_placeholder)
         
+        qr_ref = invoice_element.find(".//cac:AdditionalDocumentReference[cbc:ID='QR']", self.namespaces)
+        if qr_ref is not None:
+            qr_ref.getparent().remove(qr_ref)
+
         invoice_xml_str_c14n = ET.tostring(invoice_element, method='c14n', exclusive=True)
         return base64.b64encode(hashlib.sha256(invoice_xml_str_c14n).digest()).decode('utf-8')
 
-    def generate_signed_invoice(self):
+    def generate_signed_invoice(self, external_hasher_cmd=None, output_path=None):
+        """
+        Generates the final signed invoice XML.
+        
+        If an external_hasher_cmd is provided, it will write the file directly to the
+        output_path and return None. Otherwise, it returns the XML as a string.
+        """
         self._load_credentials()
         invoice_element, ubl_extensions = self._build_invoice_xml_structure()
-        
-        invoice_element.remove(ubl_extensions)
-        invoice_xml_str_c14n = ET.tostring(invoice_element, method='c14n', exclusive=True)
-        invoice_hash_b64 = base64.b64encode(hashlib.sha256(invoice_xml_str_c14n).digest()).decode('utf-8')
-        invoice_element.insert(0, ubl_extensions)
-        
-        self._build_signature_block(ubl_extensions, invoice_hash_b64)
-        
-        return ET.tostring(invoice_element, pretty_print=True, xml_declaration=True, encoding='UTF-8').decode('utf-8')
+
+        if external_hasher_cmd:
+            if not output_path:
+                raise ValueError("Output path is required when using an external hasher.")
+
+            # Define a separate path for the intermediate file used for hashing
+            output_dir = os.path.dirname(output_path)
+            output_filename = os.path.basename(output_path)
+            base, ext = os.path.splitext(output_filename)
+            hashing_file_path = os.path.join(output_dir, f"{base}_for_hashing{ext}")
+
+            try:
+                # --- PASS 1: Generate a structurally complete invoice with a dummy hash ---
+                print(f"[INFO] Pass 1: Generating intermediate signed invoice for hashing at '{hashing_file_path}'.")
+                dummy_hash = "DUMMY_INVOICE_HASH_PLACEHOLDER"
+                self._build_signature_block(ubl_extensions, dummy_hash)
+
+                # Write the structurally complete but incorrectly signed file to the hashing path
+                invoice_for_hashing_str = ET.tostring(invoice_element, pretty_print=True, xml_declaration=True, encoding='UTF-8').decode('utf-8')
+                with open(hashing_file_path, "w", encoding="utf-8") as f:
+                    f.write(invoice_for_hashing_str)
+                
+                # --- Run the external hasher ---
+                print(f"[INFO] Running external tool: '{external_hasher_cmd}' on file '{hashing_file_path}'")
+                command_str = f'{external_hasher_cmd} -generateHash -invoice "{hashing_file_path}"'
+                
+                result = subprocess.run(command_str, capture_output=True, text=True, check=False, encoding='utf-8', shell=True)
+
+                if result.returncode != 0:
+                    raise subprocess.CalledProcessError(result.returncode, command_str, output=result.stdout, stderr=result.stderr)
+                
+                match = re.search(r"INVOICE HASH\s*=\s*(\S+)", result.stdout)
+                if not match:
+                    raise RuntimeError(f"Could not find 'INVOICE HASH' in the output of the external tool.\nOutput:\n{result.stdout}")
+                
+                real_hash = match.group(1).strip()
+                print(f"[SUCCESS] Retrieved invoice hash from external tool: {real_hash}")
+
+                # --- PASS 2: Patch and re-sign the in-memory XML with the real hash ---
+                print("[INFO] Pass 2: Re-signing invoice with the correct hash.")
+                
+                # 1. Update invoice hash digest in the main XML tree
+                invoice_digest_elem = invoice_element.find(".//ds:Reference[@Id='invoiceSignedData']/ds:DigestValue", self.namespaces)
+                invoice_digest_elem.text = real_hash
+
+                # 2. Re-calculate SignedInfo digest and re-sign to get a new SignatureValue
+                signed_info = invoice_element.find('.//ds:SignedInfo', self.namespaces)
+                signed_info_c14n = ET.tostring(signed_info, method='c14n', exclusive=True)
+                new_signature_digest = self.private_key.sign(signed_info_c14n, ec.ECDSA(hashes.SHA256()))
+                new_signature_b64 = base64.b64encode(new_signature_digest).decode('utf-8')
+
+                # 3. Update SignatureValue in the XML tree
+                sig_value_elem = invoice_element.find('.//ds:SignatureValue', self.namespaces)
+                sig_value_elem.text = new_signature_b64
+
+                # 4. Update QR code with the real hash and new signature
+                self.qr_code_element.text = generate_qr_code_data(
+                    seller_name=self.invoice_data['seller']['name'],
+                    vat_number=self.invoice_data['seller']['vat_number'],
+                    timestamp=to_saudi_time(datetime.now(timezone.utc)),
+                    invoice_total=f"{self.invoice_data['totals']['total']:.2f}",
+                    vat_total=f"{self.invoice_data['totals']['vat']:.2f}",
+                    xml_hash=real_hash,
+                    signature=new_signature_b64,
+                    public_key=base64.b64encode(self.private_key.public_key().public_bytes(
+                        encoding=serialization.Encoding.X962, format=serialization.PublicFormat.UncompressedPoint
+                    )).decode('utf-8'),
+                    certificate_signature=base64.b64encode(self.certificate.signature).decode('utf-8')
+                )
+
+                # 5. Serialize and save the final, correct XML to the original output_path
+                final_xml_string = ET.tostring(invoice_element, pretty_print=True, xml_declaration=True, encoding='UTF-8').decode('utf-8')
+                with open(output_path, "w", encoding="utf-8") as f:
+                    f.write(final_xml_string)
+                
+                print(f"[INFO] The intermediate file used for hashing has been saved as: '{hashing_file_path}'")
+                return None # Signal that writing is complete
+
+            except Exception as e:
+                # On error, clean up the intermediate file for hashing.
+                if os.path.exists(hashing_file_path):
+                    os.remove(hashing_file_path)
+                if isinstance(e, FileNotFoundError):
+                    print(f"[ERROR] External hasher command not found: '{external_hasher_cmd}'. Please ensure it is in your system's PATH.")
+                elif isinstance(e, subprocess.CalledProcessError):
+                     print(f"[ERROR] External hasher failed with exit code {e.returncode}.")
+                     print(f"STDOUT:\n{e.output}")
+                     print(f"STDERR:\n{e.stderr}")
+                raise e
+
+        else:
+            # --- Original single-pass process for internal hasher ---
+            invoice_element_for_hash = copy.deepcopy(invoice_element)
+            ubl_ext_element = invoice_element_for_hash.find('.//ext:UBLExtensions', self.namespaces)
+            if ubl_ext_element is not None: ubl_ext_element.getparent().remove(ubl_ext_element)
+            qr_ref = invoice_element_for_hash.find(".//cac:AdditionalDocumentReference[cbc:ID='QR']", self.namespaces)
+            if qr_ref is not None: qr_ref.getparent().remove(qr_ref)
+            sig_placeholder = invoice_element_for_hash.find('.//cac:Signature', self.namespaces)
+            if sig_placeholder is not None: sig_placeholder.getparent().remove(sig_placeholder)
+            
+            invoice_xml_str_c14n = ET.tostring(invoice_element_for_hash, method='c14n', exclusive=True)
+            invoice_hash_b64 = base64.b64encode(hashlib.sha256(invoice_xml_str_c14n).digest()).decode('utf-8')
+
+            self._build_signature_block(ubl_extensions, invoice_hash_b64)
+            return ET.tostring(invoice_element, pretty_print=True, xml_declaration=True, encoding='UTF-8').decode('utf-8')
 
     def _build_signature_block(self, ubl_extensions, invoice_hash_b64):
+        # Clear any existing signature extensions to ensure a clean build
+        for ext in ubl_extensions.findall('ext:UBLExtension', self.namespaces):
+            ubl_extensions.remove(ext)
+
         sig_extension = ET.SubElement(ubl_extensions, self._get_tag('ext', 'UBLExtension'))
         ET.SubElement(sig_extension, self._get_tag('ext', 'ExtensionURI')).text = 'urn:oasis:names:specification:ubl:dsig:enveloped:xades'
         ext_content = ET.SubElement(sig_extension, self._get_tag('ext', 'ExtensionContent'))
@@ -377,7 +498,7 @@ def generate_api_request(invoice_path, output_path):
 
         # Parse the XML to find the UUID and Invoice Hash
         root = ET.fromstring(xml_bytes)
-        namespaces = root.nsmap
+        namespaces = {k if k is not None else 'def': v for k, v in root.nsmap.items()}
         
         uuid = root.find('.//cbc:UUID', namespaces).text
         
@@ -419,6 +540,7 @@ def main():
     gen_parser.add_argument("--output", required=True, help="Path for the output signed XML file.")
     gen_parser.add_argument("--key", default="ec-private-key.pem", help="Path to the EC private key PEM file.")
     gen_parser.add_argument("--cert", default="certificate.pem", help="Path to the certificate PEM file.")
+    gen_parser.add_argument("--external-hasher", help="[Optional] Command for an external tool (e.g., 'fatoora') to generate the invoice hash.")
 
     # Command: generate-hash
     hash_parser = subparsers.add_parser("generate-hash", help="Generate the Base64-encoded hash for an invoice from a JSON file.")
@@ -451,9 +573,15 @@ def main():
             
             if args.command == "generate":
                 zatca_gen = ZatcaInvoice(invoice_details, private_key_path=args.key, cert_path=args.cert)
-                signed_invoice_xml = zatca_gen.generate_signed_invoice()
-                with open(args.output, "w", encoding="utf-8") as f:
-                    f.write(signed_invoice_xml)
+                signed_invoice_xml = zatca_gen.generate_signed_invoice(
+                    external_hasher_cmd=args.external_hasher,
+                    output_path=args.output
+                )
+                
+                if signed_invoice_xml:
+                    with open(args.output, "w", encoding="utf-8") as f:
+                        f.write(signed_invoice_xml)
+                        
                 print(f"Successfully generated signed invoice: '{args.output}'")
 
             elif args.command == "generate-hash":
